@@ -1,0 +1,103 @@
+import { DateTime, Str } from "chanfana";
+imimport { z } from "zod";
+import Stripe from "stripe";
+
+import { createRoute } from "chanfana";
+import type { Env } from "../types";
+
+export const FounderConnectStripe = createRoute({
+	method: "post",
+	path: "/api/founder/connect-stripe",
+	summary: "Create Stripe Connect onboarding link for a founder",
+	tags: ["founder"],
+	request: {
+		body: {
+			content: {
+				"application/json": {
+					schema: z.object({
+						founder_id: z.string().uuid(),
+					}),
+				},
+			},
+		},
+	},
+	responses: {
+		200: {
+			description: "Stripe onboarding URL",
+			content: {
+				"application/json": {
+					schema: z.object({
+						url: z.string().url(),
+					}),
+				},
+			},
+		},
+		404: { description: "Founder not found" },
+	},
+	handler: async (c) => {
+		const { founder_id } = c.req.valid("json");
+
+		const supabaseUrl = c.env.SUPABASE_URL;
+		const serviceKey = c.env.SUPABASE_SERVICE_ROLE_KEY;
+
+		// Fetch founder
+		const founderRes = await fetch(
+			`${supabaseUrl}/rest/v1/founders?id=eq.${founder_id}&select=id,stripe_account_id`,
+			{
+				headers: {
+					apikey: serviceKey,
+					Authorization: `Bearer ${serviceKey}`,
+				},
+			}
+		);
+
+		const founders = (await founderRes.json()) as Array<{ stripe_account_id: string | null }>;
+		if (!Array.isArray(founders) || founders.length === 0) {
+			return c.text("Founder not found", 404);
+		}
+
+		let stripeAccountId = founders[0].stripe_account_id;
+
+		const stripe = new Stripe(c.env.STRIPE_SECRET_KEY, {
+			apiVersion: "2023-10-16",
+			httpClient: Stripe.createFetchHttpClient(),
+		});
+
+		// Create connected account if missing
+		if (!stripeAccountId) {
+			const account = await stripe.accounts.create({ type: "standard" });
+			stripeAccountId = account.id;
+
+			await fetch(`${supabaseUrl}/rest/v1/founders?id=eq.${founder_id}`, {
+				method: "PATCH",
+				headers: {
+					"Content-Type": "application/json",
+					apikey: serviceKey,
+					Authorization: `Bearer ${serviceKey}`,
+				},
+				body: JSON.stringify({
+					stripe_account_id: stripeAccountId,
+					stripe_connect_status: "pending",
+				}),
+			});
+		}
+
+		// Create onboarding link
+		const link = await stripe.accountLinks.create({
+			account: stripeAccountId,
+			refresh_url: `${c.env.APP_BASE_URL}/connect/refresh`,
+			return_url: `${c.env.APP_BASE_URL}/connect/success`,
+			type: "account_onboarding",
+		});
+
+		return c.json({ url: link.url }, 200);
+	},
+} AppContext = Context<{ Bindings: Env }>;
+
+export const Task = z.object({
+	name: Str({ example: "lorem" }),
+	slug: Str(),
+	description: Str({ required: false }),
+	completed: z.boolean().default(false),
+	due_date: DateTime(),
+});
