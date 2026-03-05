@@ -1,6 +1,7 @@
 import { Bool, OpenAPIRoute } from "chanfana";
 import { z } from "zod";
 import { type AppContext, Task } from "../types";
+import { createTask } from "../taskStore";
 
 export class TaskCreate extends OpenAPIRoute {
 	schema = {
@@ -39,8 +40,20 @@ export class TaskCreate extends OpenAPIRoute {
 		const data = await this.getValidatedData<typeof this.schema>();
 
 		// Retrieve the validated request body
-		const taskToCreate = data.body;
+const taskToCreate = data.body;
 
+const created = createTask({
+  name: taskToCreate.name,
+  slug: taskToCreate.slug,
+  description: taskToCreate.description ?? null,
+  completed: taskToCreate.completed ?? false,
+  due_date: taskToCreate.due_date,
+});
+
+return {
+  success: true,
+  task: created,
+};
 		// Implement your own object insertion here
 
 		// return the new task

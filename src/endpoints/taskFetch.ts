@@ -1,7 +1,7 @@
 import { Bool, OpenAPIRoute, Str } from "chanfana";
 import { z } from "zod";
 import { type AppContext, Task } from "../types";
-
+import { getTask } from "../taskStore";
 export class TaskFetch extends OpenAPIRoute {
 	schema = {
 		tags: ["Tasks"],
@@ -47,9 +47,22 @@ export class TaskFetch extends OpenAPIRoute {
 		// Get validated data
 		const data = await this.getValidatedData<typeof this.schema>();
 
-		// Retrieve the validated slug
-		const { taskSlug } = data.params;
+// Retrieve the validated slug
+const { taskSlug } = data.params;
 
+const task = getTask(taskSlug);
+
+if (!task) {
+  return Response.json(
+    { success: false, error: "Object not found" },
+    { status: 404 }
+  );
+}
+
+return {
+  success: true,
+  task,
+};
 		// Implement your own object fetch here
 
 		const exists = true;
