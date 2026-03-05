@@ -40,4 +40,6 @@ app.post("/api/stripe/webhook", stripeWebhook);
 app.post("/api/founder/connect-stripe", founderConnectStripe);
 
 // Export the app
+app.get("/checkout/success", (c) => c.text("Payment successful. You can close this tab."));
+app.get("/checkout/cancel", (c) => c.text("Payment canceled. You can close this tab."));
 export default app;
