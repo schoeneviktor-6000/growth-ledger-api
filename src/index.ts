@@ -1,6 +1,8 @@
 import { fromHono } from "chanfana";
 import { Hono } from "hono";
 
+import type { Env } from "./env";
+
 import { TaskCreate } from "./endpoints/taskCreate";
 import { TaskDelete } from "./endpoints/taskDelete";
 import { TaskFetch } from "./endpoints/taskFetch";
@@ -11,7 +13,8 @@ import { agentApply } from "./endpoints/agentApply";
 import { referralCreate } from "./endpoints/referralCreate";
 
 import { founderConnectStripe } from "./endpoints/founderConnectStripe";
-import type { Env } from "./env";
+import { checkoutCreate } from "./endpoints/checkoutCreate";
+import { stripeWebhook } from "./endpoints/stripeWebhook";
 
 // Start a Hono app with typed bindings
 const app = new Hono<{ Bindings: Env }>();
@@ -27,12 +30,13 @@ openapi.post("/api/tasks", TaskCreate);
 openapi.get("/api/tasks/:taskSlug", TaskFetch);
 openapi.delete("/api/tasks/:taskSlug", TaskDelete);
 
-// Agent + referral routes (normal Hono routes)
+// Normal Hono routes
 app.post("/api/agents/register", agentRegister);
 app.post("/api/agents/apply", agentApply);
 app.post("/api/referrals/create", referralCreate);
 
-// Stripe Connect endpoint (normal Hono route, not OpenAPI)
+app.post("/api/checkout/create", checkoutCreate);
+app.post("/api/stripe/webhook", stripeWebhook);
 app.post("/api/founder/connect-stripe", founderConnectStripe);
 
 // Export the app
