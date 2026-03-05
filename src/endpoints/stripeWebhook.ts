@@ -8,6 +8,7 @@ type CheckoutSessionRow = {
   growth_partner_id: string;
   referral_id: string | null;
   status: string;
+  stripe_subscription_id: string | null;
 };
 
 type ProductRow = {
@@ -84,7 +85,6 @@ async function insertStripeEvent(sb: ReturnType<typeof supabaseRest>, event: any
     });
     return { inserted: true, stripe_account_id };
   } catch (_e) {
-    // likely duplicate event id
     return { inserted: false, stripe_account_id };
   }
 }
@@ -186,12 +186,10 @@ export async function stripeWebhook(c: Context) {
 
   const event_type: string = event.type;
 
-  // 1) CHECKOUT SESSION COMPLETED
-  // - mark checkout_session as paid
-  // - create FIRST ledger_payment + commission if invoice exists
   if (event_type === "checkout.session.completed") {
     const session = event.data?.object;
     const stripe_checkout_session_id: string | undefined = session?.id;
+    const stripe_subscription_id: string | null = session?.subscription ?? null;
 
     if (!stripe_checkout_session_id) {
       return c.json({ received: true, warning: "Missing checkout session id" }, 200);
@@ -200,7 +198,7 @@ export async function stripeWebhook(c: Context) {
     const csRows = await sb.get(
       `/checkout_sessions?stripe_checkout_session_id=eq.${encodeURIComponent(
         stripe_checkout_session_id
-      )}&select=stripe_checkout_session_id,stripe_account_id,product_id,growth_partner_id,referral_id,status`
+      )}&select=stripe_checkout_session_id,stripe_account_id,product_id,growth_partner_id,referral_id,status,stripe_subscription_id`
     );
 
     if (!Array.isArray(csRows) || csRows.length === 0) {
@@ -213,23 +211,23 @@ export async function stripeWebhook(c: Context) {
       `/checkout_sessions?stripe_checkout_session_id=eq.${encodeURIComponent(
         stripe_checkout_session_id
       )}`,
-      { status: "paid" }
+      {
+        status: "paid",
+        stripe_subscription_id,
+      }
     );
 
     const stripe_invoice_id: string | null = session?.invoice ?? null;
-    const stripe_subscription_id: string | null = session?.subscription ?? null;
     const stripe_customer_id: string | null = session?.customer ?? null;
     const stripe_payment_intent_id: string | null = session?.payment_intent ?? null;
     const amount_gross: number | null = session?.amount_total ?? null;
     const currency: string | null = session?.currency ?? null;
     const paid_at = isoFromStripeCreated(event.created);
 
-    // If Stripe has not attached an invoice yet, we just mark session as paid and stop here.
     if (!stripe_invoice_id) {
       return c.json({ received: true, info: "No invoice on checkout.session.completed" }, 200);
     }
 
-    // Deduplicate first-payment ledger insert
     const existingLedgerId = await fetchLedgerPaymentIdByInvoice(sb, stripe_invoice_id);
     if (existingLedgerId) {
       return c.json({ received: true, deduped: true }, 200);
@@ -275,8 +273,6 @@ export async function stripeWebhook(c: Context) {
     return c.json({ received: true }, 200);
   }
 
-  // 2) RECURRING INVOICE PAID
-  // - create recurring ledger_payment + commission
   if (event_type === "invoice.paid") {
     const invoice = event.data?.object;
 
@@ -292,7 +288,6 @@ export async function stripeWebhook(c: Context) {
       return c.json({ received: true, warning: "invoice.paid missing invoice id" }, 200);
     }
 
-    // Deduplicate by invoice id
     const existingLedgerId = await fetchLedgerPaymentIdByInvoice(sb, stripe_invoice_id);
     if (existingLedgerId) {
       return c.json({ received: true, deduped: true }, 200);
@@ -302,27 +297,26 @@ export async function stripeWebhook(c: Context) {
       return c.json({ received: true, warning: "invoice.paid missing subscription id" }, 200);
     }
 
-    // Attribute recurring invoices via previous ledger_payment on same subscription
-    const priorRows = await sb.get(
-      `/ledger_payments?stripe_subscription_id=eq.${encodeURIComponent(
+    const csRows = await sb.get(
+      `/checkout_sessions?stripe_subscription_id=eq.${encodeURIComponent(
         stripe_subscription_id
-      )}&select=id,product_id,growth_partner_id,stripe_account_id&order=created_at.asc`
+      )}&select=stripe_checkout_session_id,stripe_account_id,product_id,growth_partner_id,referral_id,status,stripe_subscription_id&limit=1`
     );
 
-    if (!Array.isArray(priorRows) || priorRows.length === 0) {
+    if (!Array.isArray(csRows) || csRows.length === 0) {
       return c.json(
-        { received: true, warning: "No prior ledger_payment found for subscription attribution" },
+        { received: true, warning: "No checkout_session found for subscription attribution" },
         200
       );
     }
 
-    const prior = priorRows[0] as LedgerPaymentRow;
+    const cs = csRows[0] as CheckoutSessionRow;
 
     await sb.post("/ledger_payments", {
-      stripe_account_id: prior.stripe_account_id,
+      stripe_account_id: cs.stripe_account_id,
       stripe_event_id: event.id,
-      product_id: prior.product_id,
-      growth_partner_id: prior.growth_partner_id,
+      product_id: cs.product_id,
+      growth_partner_id: cs.growth_partner_id,
       stripe_customer_id,
       stripe_subscription_id,
       stripe_invoice_id,
@@ -339,22 +333,20 @@ export async function stripeWebhook(c: Context) {
       return c.json({ received: true, warning: "Recurring ledger_payment id not found" }, 200);
     }
 
-    const product = await getProduct(sb, prior.product_id);
+    const product = await getProduct(sb, cs.product_id);
     if (!product) {
       return c.json({ received: true, warning: "Product not found for recurring commission calc" }, 200);
     }
 
     const priorCount = await countPriorLedgerPaymentsBySubscription(sb, stripe_subscription_id);
 
-    // priorCount includes the current row because we already inserted it.
-    // Pay commissions only for first N invoices.
     if (priorCount <= Number(product.commission_months)) {
       await createCommissionForLedgerPayment(
         sb,
         ledger_payment_id,
         product,
-        prior.growth_partner_id,
-        prior.product_id,
+        cs.growth_partner_id,
+        cs.product_id,
         amount_gross,
         currency,
         paid_at
@@ -364,6 +356,5 @@ export async function stripeWebhook(c: Context) {
     return c.json({ received: true }, 200);
   }
 
-  // Ignore all other events
   return c.json({ received: true }, 200);
 }
