@@ -7,6 +7,7 @@ import { TaskList } from "./endpoints/taskList";
 import { agentRegister } from "./endpoints/agentRegister";
 import { agentApply } from "./endpoints/agentApply";
 import { referralCreate } from "./endpoints/referralCreate";
+import { checkoutCreate } from "./endpoints/checkoutCreate";
 
 // Start a Hono app
 const app = new Hono<{ Bindings: Env }>();
@@ -24,6 +25,7 @@ openapi.delete("/api/tasks/:taskSlug", TaskDelete);
 app.post("/api/agents/register", (c) => agentRegister(c));
 app.post("/api/agents/apply", (c) => agentApply(c));
 app.post("/api/referrals/create", (c) => referralCreate(c));
+app.post("/api/checkout/create", checkoutCreate);
 
 // You may also register routes for non OpenAPI directly on Hono
 // app.get('/test', (c) => c.text('Hono!'))
